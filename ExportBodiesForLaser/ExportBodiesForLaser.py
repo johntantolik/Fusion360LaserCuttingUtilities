@@ -1,0 +1,184 @@
+#Author-John Antolik
+#Description-detect all flat bodies in the current selection and save to a single dxf file for laser cutting
+
+import adsk.core, adsk.fusion, adsk.cam, traceback
+import random
+
+def run(context):
+    ui = None
+    try:
+        app = adsk.core.Application.get()
+        ui  = app.userInterface
+        des = adsk.fusion.Design.cast(app.activeProduct)
+        root: adsk.fusion.Component = adsk.fusion.Component.cast(des.rootComponent)
+        
+        # get the bodies to export from the user selection
+        bodies = []
+        for selection in ui.activeSelections:
+            selectedEntity = selection.entity
+            if selectedEntity.objectType == adsk.fusion.BRepBody.classType():
+                bodies.append(selectedEntity)
+
+        if len(bodies) == 0:
+            ui.messageBox('Select bodies to export before running the script')
+            return
+
+        # make a sketch to accumulate all of the face profiles
+        accumulateSketch: adsk.fusion.Sketch = root.sketches.add(root.xYConstructionPlane)
+        resultStr = ''
+        numFlatBodies = 0
+        spacing = 0.5
+        xDispTotal = 0.0
+
+        # export each body
+        for body in bodies:
+            # get all the faces of the body, sorted by area because the profile sides are likely to be largest
+            faces = body.faces
+            sortedFaces = [face for face in faces]
+            sortedFaces.sort(key = lambda f: f.area, reverse = True)
+
+            # check if the body is flat with respect to the largest face
+            flat, thickness = isBodyFlat(sortedFaces[0], body)
+            if flat:
+                numFlatBodies += 1
+                resultStr += body.name + ' can be cut from ' + str(round(10.0 * thickness, 2)) + ' mm material\n'
+
+                # color the faces whose curves will be saved to dxf
+                # for now, be lazy and assume the second face in the list is the back face
+                # sortedFaces[0].appearance = getIndicatorAppearance()
+                # sortedFaces[1].appearance = getIndicatorAppearance()
+
+                # make a temporary sketch from the face
+                # this automatically projects the face onto the sketch, seemingly even when the option to do so in preferences is turned off
+                tempSketch: adsk.fusion.Sketch = root.sketches.add(sortedFaces[0])
+                tempSketch.redefine(root.xYConstructionPlane)  # move the sketch onto the root XY plane
+
+                # now copy the sketch curves onto the accumulate sketch with the correct displacements
+                xDisp = -tempSketch.boundingBox.minPoint.x + xDispTotal
+                yDisp = -tempSketch.boundingBox.minPoint.y
+                tempSketch.copy(getAllSketchCurves(tempSketch), getXYTranslationMatrix(xDisp, yDisp), accumulateSketch)
+
+                # update the total size of the sketch
+                width = tempSketch.boundingBox.maxPoint.x - tempSketch.boundingBox.minPoint.x
+                xDispTotal += width + spacing
+
+                # delete the sketch
+                tempSketch.deleteMe()
+            else:
+                resultStr += body.name + ' is not flat\n'
+
+        ui.messageBox('Detected ' + str(numFlatBodies) + ' bodies to export for laser cutting:\n\n' + resultStr)
+
+        # get file path from user to save the dxf
+        fileDialog = ui.createFileDialog()
+        fileDialog.isMultiSelectEnabled = False
+        fileDialog.title = "Specify file to save DXF"
+        fileDialog.filter = 'DXF files (*.dxf)'
+        fileDialog.filterIndex = 0
+        dialogResult = fileDialog.showSave()
+        if dialogResult == adsk.core.DialogResults.DialogOK:
+            filename = fileDialog.filename
+        else:
+            return
+
+        # finally, save all of the accumulated profiled to dxf and then clean up the sketch
+        accumulateSketch.saveAsDXF(filename)
+        accumulateSketch.deleteMe()
+
+    except:
+        if ui:
+            ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
+
+
+def isBodyFlat(face, body):
+    # conditions which must all be satisfied in order for the body to be flat, i.e. can be laser cut:
+    # 1) has a flat face
+    # 2) has exactly one face encountered by a ray cast normal to the first face
+    # 3) this new face must be flat and parallel to the first face
+    # 4) all edges in the body that do not belong to one of these faces must be straight lines and normal to the first face
+
+    # since the largest face is the profile to be laser cut 99% of the time, we only need to perform these checks starting with the largest face of the body
+    # this will be much faster than performing the check for every face in the assembly, though maybe the speed isn't even an issue here
+
+    result = False
+    bodyThickness = 0.0
+
+    if isFacePlanar(face):
+        # get the normal and reverse its direction so it points into the body
+        normal: adsk.core.Vector3D = getPlanarFaceNormal(face)
+        normal.scaleBy(-1.0)
+
+        # cast a ray to find the back face of the body
+        # first need to get the parent component
+        comp: adsk.fusion.Component = body.parentComponent
+        # cast the ray, looking for faces (entityType=1)
+        hitCol: adsk.core.ObjectCollection = adsk.core.ObjectCollection.create()
+        objCol = comp.findBRepUsingRay(face.pointOnFace, normal, 1, -1.0, False, hitCol)
+
+        # now we need to exclude any faces we found that don't belong to this body
+        intersectedFaces = []
+        for obj in objCol:
+            if obj.body == body:
+                intersectedFaces.append(obj)
+        
+        if len(intersectedFaces) == 1:
+            backFace = intersectedFaces[0]
+            # we have intersected exactly one face
+            # now check that this face is planar and parallel to the first face
+            if isFacePlanar(backFace) and face.geometry.isParallelToPlane(backFace.geometry):
+                # finally, we need to check that all of the edges in the body that don't belong to these faces are lines and perpendicular to them
+                for edge in body.edges:
+                    if edge not in face.edges and edge not in backFace.edges:
+                        if edge.geometry.curveType != 0 or not face.geometry.isPerpendicularToLine(edge.geometry):
+                            break
+                else:
+                    # we get here if the for loop completes without breaking
+                    result = True
+                    bodyThickness = hitCol[0].distanceTo(face.pointOnFace)
+
+    return result, bodyThickness
+
+
+def isFacePlanar(face) -> bool:
+    # surfaceType is an enum, value of 0 indicates plane
+    return face.geometry.surfaceType == 0
+
+
+def getPlanarFaceNormal(face) -> adsk.core.Vector3D:
+    # use a surfaceEvaluator so the normal is guaranteed to point outward from the body
+    success, normal = face.evaluator.getNormalAtPoint(face.pointOnFace)
+    if success:
+        return normal
+    else:
+        return adsk.core.Vector3D.create() # return a default vector if fails
+
+
+def getIndicatorAppearance() -> adsk.core.Appearance:
+    app: adsk.fusion.Application = adsk.core.Application.get()
+    des: adsk.fusion.Design = app.activeProduct
+
+    appearanceName = 'laserCutScriptIndicator'
+    indAppearance = des.appearances.itemByName(appearanceName)
+
+    if indAppearance is None:
+        # get a base appearance from the material library
+        lib = app.materialLibraries.itemByName('Fusion 360 Appearance Library')
+        baseAppearance: adsk.core.Appearance = lib.appearances.itemByName('Plastic - Matte (Yellow)')
+        indAppearance: adsk.core.Appearance = des.appearances.addByCopy(baseAppearance, appearanceName)
+
+    return indAppearance
+
+
+def getAllSketchCurves(sketch) -> adsk.core.ObjectCollection:
+    sketchEntities: adsk.core.ObjectCollection = adsk.core.ObjectCollection.create()
+    [sketchEntities.add(curve) for curve in sketch.sketchCurves]  # add all of the curves in the sketch to a collection
+    return sketchEntities
+
+
+def getXYTranslationMatrix(xDisp, yDisp) -> adsk.core.Matrix3D:
+    matMove: adsk.core.Matrix3D = adsk.core.Matrix3D.create()
+    translation: adsk.core.Vector3D = adsk.core.Vector3D.create()
+    translation.x = xDisp
+    translation.y = yDisp
+    matMove.translation = translation
+    return matMove
