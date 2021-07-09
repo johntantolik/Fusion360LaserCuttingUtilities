@@ -1,93 +1,173 @@
 #Author-John Antolik
 #Description-detect all flat bodies in the current selection and save to a single dxf file for laser cutting
 
-import adsk.core, adsk.fusion, adsk.cam, traceback
-import random
+import adsk.core, adsk.fusion, traceback
+
+handlers = []
 
 def run(context):
     ui = None
     try:
         app = adsk.core.Application.get()
-        ui  = app.userInterface
-        des = adsk.fusion.Design.cast(app.activeProduct)
-        root: adsk.fusion.Component = adsk.fusion.Component.cast(des.rootComponent)
-        
-        # get the bodies to export from the user selection
-        bodies = []
-        for selection in ui.activeSelections:
-            selectedEntity = selection.entity
-            if selectedEntity.objectType == adsk.fusion.BRepBody.classType():
-                bodies.append(selectedEntity)
+        ui = app.userInterface
 
-        if len(bodies) == 0:
-            ui.messageBox('Select bodies to export before running the script')
-            return
+        # get the command definitions
+        cmdDefs = ui.commandDefinitions
 
-        # make a sketch to accumulate all of the face profiles
-        accumulateSketch: adsk.fusion.Sketch = root.sketches.add(root.xYConstructionPlane)
-        resultStr = ''
-        numFlatBodies = 0
-        spacing = 0.5
-        xDispTotal = 0.0
+        # create a button command definition
+        button = cmdDefs.addButtonDefinition('LaserExportButtonId', 'Laser Cut', 
+        'Checks if selected bodies can be laser cut and outputs selection to a single DXF file if so.')
 
-        # export each body
-        for body in bodies:
-            # get all the faces of the body, sorted by area because the profile sides are likely to be largest
-            faces = body.faces
-            sortedFaces = [face for face in faces]
-            sortedFaces.sort(key = lambda f: f.area, reverse = True)
+        # connect to command created event
+        laserExportCommandCreated = laserExportCommandCreatedEventHandler()
+        button.commandCreated.add(laserExportCommandCreated)
+        handlers.append(laserExportCommandCreated)
 
-            # check if the body is flat with respect to the largest face
-            flat, thickness = isBodyFlat(sortedFaces[0], body)
-            if flat:
-                numFlatBodies += 1
-                resultStr += body.name + ' can be cut from ' + str(round(10.0 * thickness, 2)) + ' mm material\n'
-
-                # color the faces whose curves will be saved to dxf
-                # for now, be lazy and assume the second face in the list is the back face
-                # sortedFaces[0].appearance = getIndicatorAppearance()
-                # sortedFaces[1].appearance = getIndicatorAppearance()
-
-                # make a temporary sketch from the face
-                # this automatically projects the face onto the sketch, seemingly even when the option to do so in preferences is turned off
-                tempSketch: adsk.fusion.Sketch = root.sketches.add(sortedFaces[0])
-                tempSketch.redefine(root.xYConstructionPlane)  # move the sketch onto the root XY plane
-
-                # now copy the sketch curves onto the accumulate sketch with the correct displacements
-                xDisp = -tempSketch.boundingBox.minPoint.x + xDispTotal
-                yDisp = -tempSketch.boundingBox.minPoint.y
-                tempSketch.copy(getAllSketchCurves(tempSketch), getXYTranslationMatrix(xDisp, yDisp), accumulateSketch)
-
-                # update the total size of the sketch
-                width = tempSketch.boundingBox.maxPoint.x - tempSketch.boundingBox.minPoint.x
-                xDispTotal += width + spacing
-
-                # delete the sketch
-                tempSketch.deleteMe()
-            else:
-                resultStr += body.name + ' is not flat\n'
-
-        ui.messageBox('Detected ' + str(numFlatBodies) + ' bodies to export for laser cutting:\n\n' + resultStr)
-
-        # get file path from user to save the dxf
-        fileDialog = ui.createFileDialog()
-        fileDialog.isMultiSelectEnabled = False
-        fileDialog.title = "Specify file to save DXF"
-        fileDialog.filter = 'DXF files (*.dxf)'
-        fileDialog.filterIndex = 0
-        dialogResult = fileDialog.showSave()
-        if dialogResult == adsk.core.DialogResults.DialogOK:
-            filename = fileDialog.filename
-        else:
-            return
-
-        # finally, save all of the accumulated profiled to dxf and then clean up the sketch
-        accumulateSketch.saveAsDXF(filename)
-        accumulateSketch.deleteMe()
-
+        # add the button to requisite control panels (next to '3D Print' command)
+        qat = ui.toolbars.itemById('QAT')
+        fileDropDown = qat.controls.itemById('FileSubMenuCommand')
+        print3DCmd = fileDropDown.controls.itemById('ThreeDprintCmdDef')
+        buttonControl = fileDropDown.controls.addCommand(button, print3DCmd.index)
     except:
         if ui:
             ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
+
+
+# event handler for commandCreated event
+class laserExportCommandCreatedEventHandler(adsk.core.CommandCreatedEventHandler):
+    def __init__(self) -> None:
+        super().__init__()
+    
+    def notify(self, args):
+        eventArgs = adsk.core.CommandCreatedEventArgs.cast(args)
+        cmd = eventArgs.command
+
+        # connect to the execute event
+        onExecute = laserExportCommandExecuteHandler()
+        cmd.execute.add(onExecute)
+        handlers.append(onExecute)
+
+
+# event handler for execute event
+class laserExportCommandExecuteHandler(adsk.core.CommandEventHandler):
+    def __init__(self) -> None:
+        super().__init__()
+    
+    def notify(self, args):
+        eventArgs = adsk.core.CommandEventArgs.cast(args)
+        
+        # code to execute the command
+        app = adsk.core.Application.get()
+        ui = app.userInterface
+        ui.messageBox('command executed')
+
+
+# clean up the added buttons when the add-in is stopped
+def stop(context):
+    try:
+        app = adsk.core.Application.get()
+        ui = app.userInterface
+
+        # clean up the command
+        cmdDef = ui.commandDefinitions.itemById('LaserExportButtonId')
+        if cmdDef:
+            cmdDef.deleteMe()
+
+        # clean up the buttons
+        qat = ui.toolbars.itemById('QAT')
+        fileDropDown = qat.controls.itemById('FileSubMenuCommand')
+        cntrl = fileDropDown.controls.itemById('LaserExportButtonId')
+        if cntrl:
+            cntrl.deleteMe()
+    except:
+        if ui:
+            ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
+
+
+# def run(context):
+#     ui = None
+#     try:
+#         app = adsk.core.Application.get()
+#         ui  = app.userInterface
+#         des = adsk.fusion.Design.cast(app.activeProduct)
+#         root: adsk.fusion.Component = adsk.fusion.Component.cast(des.rootComponent)
+        
+#         # get the bodies to export from the user selection
+#         bodies = []
+#         for selection in ui.activeSelections:
+#             selectedEntity = selection.entity
+#             if selectedEntity.objectType == adsk.fusion.BRepBody.classType():
+#                 bodies.append(selectedEntity)
+
+#         if len(bodies) == 0:
+#             ui.messageBox('Select bodies to export before running the script')
+#             return
+
+#         # make a sketch to accumulate all of the face profiles
+#         accumulateSketch: adsk.fusion.Sketch = root.sketches.add(root.xYConstructionPlane)
+#         resultStr = ''
+#         numFlatBodies = 0
+#         spacing = 0.5
+#         xDispTotal = 0.0
+
+#         # export each body
+#         for body in bodies:
+#             # get all the faces of the body, sorted by area because the profile sides are likely to be largest
+#             faces = body.faces
+#             sortedFaces = [face for face in faces]
+#             sortedFaces.sort(key = lambda f: f.area, reverse = True)
+
+#             # check if the body is flat with respect to the largest face
+#             flat, thickness = isBodyFlat(sortedFaces[0], body)
+#             if flat:
+#                 numFlatBodies += 1
+#                 resultStr += body.name + ' can be cut from ' + str(round(10.0 * thickness, 2)) + ' mm material\n'
+
+#                 # color the faces whose curves will be saved to dxf
+#                 # for now, be lazy and assume the second face in the list is the back face
+#                 # sortedFaces[0].appearance = getIndicatorAppearance()
+#                 # sortedFaces[1].appearance = getIndicatorAppearance()
+
+#                 # make a temporary sketch from the face
+#                 # this automatically projects the face onto the sketch, seemingly even when the option to do so in preferences is turned off
+#                 tempSketch: adsk.fusion.Sketch = root.sketches.add(sortedFaces[0])
+#                 tempSketch.redefine(root.xYConstructionPlane)  # move the sketch onto the root XY plane
+
+#                 # now copy the sketch curves onto the accumulate sketch with the correct displacements
+#                 xDisp = -tempSketch.boundingBox.minPoint.x + xDispTotal
+#                 yDisp = -tempSketch.boundingBox.minPoint.y
+#                 tempSketch.copy(getAllSketchCurves(tempSketch), getXYTranslationMatrix(xDisp, yDisp), accumulateSketch)
+
+#                 # update the total size of the sketch
+#                 width = tempSketch.boundingBox.maxPoint.x - tempSketch.boundingBox.minPoint.x
+#                 xDispTotal += width + spacing
+
+#                 # delete the sketch
+#                 tempSketch.deleteMe()
+#             else:
+#                 resultStr += body.name + ' is not flat\n'
+
+#         ui.messageBox('Detected ' + str(numFlatBodies) + ' bodies to export for laser cutting:\n\n' + resultStr)
+
+#         # get file path from user to save the dxf
+#         fileDialog = ui.createFileDialog()
+#         fileDialog.isMultiSelectEnabled = False
+#         fileDialog.title = "Specify file to save DXF"
+#         fileDialog.filter = 'DXF files (*.dxf)'
+#         fileDialog.filterIndex = 0
+#         dialogResult = fileDialog.showSave()
+#         if dialogResult == adsk.core.DialogResults.DialogOK:
+#             filename = fileDialog.filename
+#         else:
+#             return
+
+#         # finally, save all of the accumulated profiled to dxf and then clean up the sketch
+#         accumulateSketch.saveAsDXF(filename)
+#         accumulateSketch.deleteMe()
+
+#     except:
+#         if ui:
+#             ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
 
 
 def isBodyFlat(face, body):
