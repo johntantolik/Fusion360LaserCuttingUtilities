@@ -15,20 +15,21 @@ def run(context):
         cmdDefs = ui.commandDefinitions
 
         # create a button command definition
-        button = cmdDefs.addButtonDefinition('LaserExportButtonId', 'Laser Cut', 
-        'Checks if selected bodies can be laser cut and outputs selection to a single DXF file if so.', './/resources')
+        cmdDef = cmdDefs.addButtonDefinition('LaserExportButtonId', 'Laser Cut', 
+        'Checks if selected bodies can be laser cut and outputs selection to a single DXF file if so.', './resources')
 
         # connect to command created event
         laserExportCommandCreated = laserExportCommandCreatedEventHandler()
-        button.commandCreated.add(laserExportCommandCreated)
+        cmdDef.commandCreated.add(laserExportCommandCreated)
         handlers.append(laserExportCommandCreated)
 
         # add the button to requisite control panels (next to '3D Print' command)
         qat = ui.toolbars.itemById('QAT')
         fileDropDown = qat.controls.itemById('FileSubMenuCommand')
-        fileDropDown.controls.addCommand(button, 'ThreeDprintCmdDef', True)
+        fileDropDown.controls.addCommand(cmdDef, 'ThreeDprintCmdDef', True)
         makePanel = ui.allToolbarPanels.itemById('SolidMakePanel')
-        cmdControl = makePanel.controls.addCommand(button, 'ThreeDprintCmdDef', True)
+        cmdControl = makePanel.controls.addCommand(cmdDef, 'ThreeDprintCmdDef', False)
+        cmdControl.isPromotedByDefault = True
         cmdControl.isPromoted = True
     except:
         if ui:
