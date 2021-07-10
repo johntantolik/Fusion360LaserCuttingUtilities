@@ -9,14 +9,14 @@ def run(context):
     ui = None
     try:
         app = adsk.core.Application.get()
-        ui = app.userInterface
+        ui: adsk.core.UserInterface = app.userInterface
 
         # get the command definitions
         cmdDefs = ui.commandDefinitions
 
         # create a button command definition
         button = cmdDefs.addButtonDefinition('LaserExportButtonId', 'Laser Cut', 
-        'Checks if selected bodies can be laser cut and outputs selection to a single DXF file if so.')
+        'Checks if selected bodies can be laser cut and outputs selection to a single DXF file if so.', './/resources')
 
         # connect to command created event
         laserExportCommandCreated = laserExportCommandCreatedEventHandler()
@@ -26,8 +26,10 @@ def run(context):
         # add the button to requisite control panels (next to '3D Print' command)
         qat = ui.toolbars.itemById('QAT')
         fileDropDown = qat.controls.itemById('FileSubMenuCommand')
-        print3DCmd = fileDropDown.controls.itemById('ThreeDprintCmdDef')
-        buttonControl = fileDropDown.controls.addCommand(button, print3DCmd.index)
+        fileDropDown.controls.addCommand(button, 'ThreeDprintCmdDef', True)
+        makePanel = ui.allToolbarPanels.itemById('SolidMakePanel')
+        cmdControl = makePanel.controls.addCommand(button, 'ThreeDprintCmdDef', True)
+        cmdControl.isPromoted = True
     except:
         if ui:
             ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
@@ -77,6 +79,11 @@ def stop(context):
         qat = ui.toolbars.itemById('QAT')
         fileDropDown = qat.controls.itemById('FileSubMenuCommand')
         cntrl = fileDropDown.controls.itemById('LaserExportButtonId')
+        if cntrl:
+            cntrl.deleteMe()
+
+        makePanel = ui.allToolbarPanels.itemById('SolidMakePanel')
+        cntrl = makePanel.controls.itemById('LaserExportButtonId')
         if cntrl:
             cntrl.deleteMe()
     except:
