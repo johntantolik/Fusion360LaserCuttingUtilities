@@ -1,4 +1,4 @@
-# F360LaserCuttingUtilities
+# Fusion360LaserCuttingUtilities
 Fusion 360 scripts and add-ins to improve the laser cutting workflow
 
 # ExportBodiesForLaser
