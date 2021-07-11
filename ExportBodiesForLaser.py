@@ -129,18 +129,19 @@ class laserExportCommandExecuteHandler(adsk.core.CommandEventHandler):
 
             ui.messageBox('Detected ' + str(numFlatBodies) + ' bodies to export for laser cutting:\n\n' + resultStr)
 
-            # get file path from user to save the dxf
-            fileDialog = ui.createFileDialog()
-            fileDialog.isMultiSelectEnabled = False
-            fileDialog.title = "Specify file to save DXF"
-            fileDialog.filter = 'DXF files (*.dxf)'
-            fileDialog.filterIndex = 0
-            dialogResult = fileDialog.showSave()
+            if numFlatBodies > 0:
+                # get file path from user to save the dxf
+                fileDialog = ui.createFileDialog()
+                fileDialog.isMultiSelectEnabled = False
+                fileDialog.title = "Specify file to save DXF"
+                fileDialog.filter = 'DXF files (*.dxf)'
+                fileDialog.filterIndex = 0
+                dialogResult = fileDialog.showSave()
 
-            # save the profiles to dxf
-            if dialogResult == adsk.core.DialogResults.DialogOK:
-                filename = fileDialog.filename
-                accumulateSketch.saveAsDXF(filename)
+                # save the profiles to dxf
+                if dialogResult == adsk.core.DialogResults.DialogOK:
+                    filename = fileDialog.filename
+                    accumulateSketch.saveAsDXF(filename)
 
             # clean up the sketch
             accumulateSketch.deleteMe()
