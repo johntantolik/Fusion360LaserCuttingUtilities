@@ -1,6 +1,7 @@
 #Author-John Antolik
 #Description-detect all flat bodies in the current selection and save to a single dxf file for laser cutting
 
+from tkinter import OUTSIDE
 import adsk.core, adsk.fusion, traceback
 
 handlers = []
@@ -47,9 +48,12 @@ class laserExportCommandCreatedEventHandler(adsk.core.CommandCreatedEventHandler
 
         # build the ui with command inputs
         inputs: adsk.core.CommandInputs = cmd.commandInputs
+
         selectionInput = inputs.addSelectionInput('selection', 'Selection', 'Select bodies to laser cut')
         selectionInput.addSelectionFilter('SolidBodies')
         selectionInput.setSelectionLimits(0, 0)
+
+        kerfInput = inputs.addValueInput('kerf', 'Kerf', 'mm', adsk.core.ValueInput.createByReal(0.0))
 
         # connect to the execute event
         onExecute = laserExportCommandExecuteHandler()
@@ -75,6 +79,7 @@ class laserExportCommandExecuteHandler(adsk.core.CommandEventHandler):
             # get the selection from the command inputs
             inputs = eventArgs.command.commandInputs
             selectionInput = inputs.itemById('selection')
+            kerf = inputs.itemById('kerf').value
 
             # get the bodies to export from the use5r selection
             bodies = []
@@ -111,7 +116,29 @@ class laserExportCommandExecuteHandler(adsk.core.CommandEventHandler):
                     # this automatically projects the face onto the sketch, seemingly even when the option to do so in preferences is turned off
                     tempSketch: adsk.fusion.Sketch = root.sketches.add(sortedFaces[0])
                     tempSketch.isComputeDeferred = True
-                    tempSketch.redefine(root.xYConstructionPlane)  # move the sketch onto the root XY plane
+
+                    # offset profile to compensate for laser kerf
+                    if kerf > 0.0:
+                        for profile in tempSketch.profiles:
+                            # determine which is the main profile
+                            if profile.profileLoops.count > 1:
+                                break
+                        loops = profile.profileLoops
+                        for loop in loops:
+                            prCurves = loop.profileCurves
+                            skCurves = convertProfCurvesToSketchCurves(prCurves)
+                            if loop.isOuter:
+                                # expand the loop
+                                tempSketch.offset(skCurves, getPointOutsideCurves(skCurves), kerf)
+                            else:
+                                # contract the loop
+                                tempSketch.offset(skCurves, getPointInsideCurves(skCurves), kerf)
+                            # delete the original geometry
+                            for curve in skCurves:
+                                curve.deleteMe() 
+
+                    # move the sketch onto the root XY plane
+                    tempSketch.redefine(root.xYConstructionPlane)  
 
                     # now copy the sketch curves onto the accumulate sketch with the correct displacements
                     xDisp = -tempSketch.boundingBox.minPoint.x + xDispTotal
@@ -282,3 +309,124 @@ def getXYTranslationMatrix(xDisp, yDisp) -> adsk.core.Matrix3D:
     translation.y = yDisp
     matMove.translation = translation
     return matMove
+
+
+def convertProfCurvesToSketchCurves(prCurves) -> adsk.core.ObjectCollection:
+    skCurves = adsk.core.ObjectCollection.create()
+    for curve in prCurves:
+        skCurves.add(curve.sketchEntity)
+    return skCurves
+
+
+def getPointOutsideCurves(skCurves) -> adsk.core.Point3D:
+    # construct the bounding box for the curves
+    curve = adsk.fusion.SketchCurve.cast(None)
+    pointSets = []
+    boundBox = None
+    for curve in skCurves:
+        if not boundBox:
+            boundBox = curve.boundingBox
+        else:
+            boundBox.combine(curve.boundingBox)
+
+    # move a point outside the bouding box
+    cornerVec = boundBox.minPoint.vectorTo(boundBox.maxPoint)
+    cornerVec.normalize() 
+    outsidePoint = boundBox.maxPoint.copy()
+    outsidePoint.translateBy(cornerVec)
+    return outsidePoint
+
+
+# from:
+# https://forums.autodesk.com/t5/fusion-360-api-and-scripts/how-to-determine-a-directionpoint-to-offset-an-arbitrary-sketch/m-p/6425999#M1930
+def getPointInsideCurves(skCurves) -> adsk.core.Point3D:
+    try:
+        # Build up list of connected points.
+        curve = adsk.fusion.SketchCurve.cast(None)
+        pointSets = []
+        boundBox = None
+        for curve in skCurves:
+            if not boundBox:
+                boundBox = curve.boundingBox
+            else:
+                boundBox.combine(curve.boundingBox)            
+                
+            if isinstance(curve, adsk.fusion.SketchLine):
+                skLine = adsk.fusion.SketchLine.cast(curve)
+                pointSets.append((skLine.startSketchPoint.geometry, skLine.endSketchPoint.geometry))
+            else:
+                curveEval = adsk.core.CurveEvaluator3D.cast(curve.geometry.evaluator)
+                (retVal, startParam, endParam) = curveEval.getParameterExtents()
+                
+                (retVal, strokePoints) = curveEval.getStrokes(startParam, endParam, 0.1)
+                pointSets.append(strokePoints)
+            
+        # Create two points that define a line that crosses the entire range.  They're moved
+        # to be outside the bounding box so there's not problem with coincident points.
+        lineVec = boundBox.minPoint.vectorTo(boundBox.maxPoint)
+        lineVec.normalize()
+        maxPoint = boundBox.maxPoint.copy()
+        maxPoint.translateBy(lineVec)
+        lineVec.scaleBy(-1)
+        minPoint = boundBox.minPoint.copy()
+        minPoint.translateBy(lineVec)
+    
+        # Iterate through all of the lines and get the intersection between the lines
+        # and the long crossing line.
+        intPointList = []
+        for pointSet in pointSets:
+            pnt1 = None
+            pnt2 = None
+            for point in pointSet:
+                if not pnt2:
+                    pnt2 = point
+                else:
+                    pnt1 = pnt2
+                    pnt2 = point
+    
+                    intCoords = getLineIntersection(minPoint.x, minPoint.y, maxPoint.x, maxPoint.y, pnt1.x, pnt1.y, pnt2.x, pnt2.y)
+                    if intCoords:
+                        intPoint = adsk.core.Point3D.create(intCoords[0], intCoords[1], 0)
+                        intPointList.append((intPoint, intPoint.distanceTo(minPoint)))
+        
+        # Make sure at last two intersection points were found.
+        if len(intPointList) >= 2:
+            # Sort the points by the distance from the min point.
+            sortedPoints = sorted(intPointList, key=getKey) 
+        
+            # Get the first two points and compute a mid point.  That's a point in the area.                
+            pnt1 = sortedPoints[0]
+            pnt2 = sortedPoints[1]
+            midPoint = adsk.core.Point3D.create((pnt1[0].x + pnt2[0].x)/2, (pnt1[0].y + pnt2[0].y)/2, 0)
+            return midPoint
+        else:
+            return False
+    except:
+        ui = adsk.core.Application.get().userInterface
+        ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
+    
+                                
+# Function that's used to get the value to sort with.
+def getKey(item):
+    return item[1]
+
+                
+# Calculate the intersection between two line segments.  This is based on the JS
+# sample in the second answer at:
+# http://stackoverflow.com/questions/563198/how-do-you-detect-where-two-line-segments-intersect
+def getLineIntersection(p0_x, p0_y, p1_x, p1_y, p2_x, p2_y, p3_x, p3_y):
+    s1_x = p1_x - p0_x
+    s1_y = p1_y - p0_y
+    s2_x = p3_x - p2_x
+    s2_y = p3_y - p2_y
+
+    s = (-s1_y * (p0_x - p2_x) + s1_x * (p0_y - p2_y)) / (-s2_x * s1_y + s1_x * s2_y)
+    t = ( s2_x * (p0_y - p2_y) - s2_y * (p0_x - p2_x)) / (-s2_x * s1_y + s1_x * s2_y)
+
+    if (s >= 0 and s <= 1 and t >= 0 and t <= 1):
+        # Collision detected
+        i_x = p0_x + (t * s1_x)
+        i_y = p0_y + (t * s1_y)
+        return (i_x, i_y)
+
+    return False  # No collision
