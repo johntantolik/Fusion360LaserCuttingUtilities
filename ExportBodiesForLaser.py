@@ -105,7 +105,7 @@ class laserExportCommandExecuteHandler(adsk.core.CommandEventHandler):
                 flat, thickness = isBodyFlat(sortedFaces[0], body)
                 if flat:
                     numFlatBodies += 1
-                    resultStr += body.name + ' can be cut from ' + str(round(10.0 * thickness, 2)) + ' mm material\n'
+                    resultStr += body.name + ' can be cut from ' + str(round(10.0 * thickness, 3)) + ' mm material\n'
 
                     # make a temporary sketch from the face
                     # this automatically projects the face onto the sketch, seemingly even when the option to do so in preferences is turned off
@@ -194,20 +194,24 @@ def isBodyFlat(face, body, rigorous = False):
         # get the normal and reverse its direction so it points into the body
         normal: adsk.core.Vector3D = getPlanarFaceNormal(face)
         normal.scaleBy(-1.0)
-
+        
         # cast a ray to find the back face of the body
-        # first need to get the parent component
-        comp: adsk.fusion.Component = body.parentComponent
+        # first need to get the root component since it only seems to work to cast a ray from the root comp
+        app = adsk.core.Application.get()
+        des = adsk.fusion.Design.cast(app.activeProduct)
+        root: adsk.fusion.Component = adsk.fusion.Component.cast(des.rootComponent)
+
         # cast the ray, looking for faces (entityType=1)
         hitCol: adsk.core.ObjectCollection = adsk.core.ObjectCollection.create()
-        objCol = comp.findBRepUsingRay(face.pointOnFace, normal, 1, -1.0, False, hitCol)
+        objCol = root.findBRepUsingRay(face.pointOnFace, normal, 1, 1e-5, False, hitCol)
 
         # now we need to exclude any faces we found that don't belong to this body
         intersectedFaces = []
-        for obj in objCol:
-            if obj.body == body:
+        for obj, hit in zip(objCol, hitCol):
+            if obj.body == body and obj != face:
+                originPoint = hit
                 intersectedFaces.append(obj)
-        
+                
         if len(intersectedFaces) == 1:
             backFace = intersectedFaces[0]
             # we have intersected exactly one face
@@ -230,7 +234,7 @@ def isBodyFlat(face, body, rigorous = False):
 
     # calculate the material thickness needed
     if result:
-        bodyThickness = hitCol[0].distanceTo(face.pointOnFace)
+        bodyThickness = originPoint.distanceTo(face.pointOnFace)
 
     return result, bodyThickness
 
