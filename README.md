@@ -16,6 +16,7 @@ The add-in can be accessed through the button created next to the default "3D Pr
 # TODO
 - Refine the command dialog, allow users to manually select faces if preferred
 - Group the bodies by material thickness and export each group to a separate file
+- Automatically offset profiles to account for laser kerf
 
 ## License
 This code is licensed under the terms of the [MIT License](http://opensource.org/licenses/MIT). Please see the [LICENSE](LICENSE) file for full details.
