@@ -46,6 +46,11 @@ class laserExportCommandCreatedEventHandler(adsk.core.CommandCreatedEventHandler
         eventArgs = adsk.core.CommandCreatedEventArgs.cast(args)
         cmd = eventArgs.command
 
+        app = adsk.core.Application.get()
+        des = adsk.fusion.Design.cast(app.activeProduct)
+        unitsManager = des.unitsManager
+        units = unitsManager.defaultLengthUnits
+
         # build the ui with command inputs
         inputs: adsk.core.CommandInputs = cmd.commandInputs
 
@@ -53,7 +58,7 @@ class laserExportCommandCreatedEventHandler(adsk.core.CommandCreatedEventHandler
         selectionInput.addSelectionFilter('SolidBodies')
         selectionInput.setSelectionLimits(0, 0)
 
-        kerfInput = inputs.addValueInput('kerf', 'Kerf', 'mm', adsk.core.ValueInput.createByReal(0.0))
+        kerfInput = inputs.addValueInput('kerf', 'Kerf', units, adsk.core.ValueInput.createByReal(0.0))
 
         # connect to the execute event
         onExecute = laserExportCommandExecuteHandler()
@@ -74,6 +79,8 @@ class laserExportCommandExecuteHandler(adsk.core.CommandEventHandler):
             app = adsk.core.Application.get()
             ui  = app.userInterface
             des = adsk.fusion.Design.cast(app.activeProduct)
+            unitsManager = des.unitsManager
+            units = unitsManager.defaultLengthUnits
             root: adsk.fusion.Component = adsk.fusion.Component.cast(des.rootComponent)
 
             # get the selection from the command inputs
@@ -110,7 +117,8 @@ class laserExportCommandExecuteHandler(adsk.core.CommandEventHandler):
                 flat, thickness = isBodyFlat(sortedFaces[0], body)
                 if flat:
                     numFlatBodies += 1
-                    resultStr += body.name + ' can be cut from ' + str(round(10.0 * thickness, 3)) + ' mm material\n'
+                    resultStr += body.name + ' can be cut from ' + str(round(unitsManager.convert(thickness, 
+                        'internalUnits', units), 3)) + ' ' + unitsManager.formatUnits(units) + ' material\n'
 
                     # make a temporary sketch from the face
                     # this automatically projects the face onto the sketch, seemingly even when the option to do so in preferences is turned off
