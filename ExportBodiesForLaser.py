@@ -86,7 +86,7 @@ class laserExportCommandExecuteHandler(adsk.core.CommandEventHandler):
             # get the selection from the command inputs
             inputs = eventArgs.command.commandInputs
             selectionInput = inputs.itemById('selection')
-            kerf = inputs.itemById('kerf').value
+            kerf = inputs.itemById('kerf').value / 2 
 
             # get the bodies to export from the use5r selection
             bodies = []
@@ -123,35 +123,43 @@ class laserExportCommandExecuteHandler(adsk.core.CommandEventHandler):
                     # make a temporary sketch from the face
                     # this automatically projects the face onto the sketch, seemingly even when the option to do so in preferences is turned off
                     tempSketch: adsk.fusion.Sketch = root.sketches.add(sortedFaces[0])
-                    tempSketch.isComputeDeferred = True
+                    curvesToCopy = tempSketch.project(sortedFaces[0])
 
                     # offset profile to compensate for laser kerf
                     if kerf > 0.0:
+                        curvesToCopy = adsk.core.ObjectCollection.create()
+                        tempSketch.isComputeDeferred = True
                         for profile in tempSketch.profiles:
                             # determine which is the main profile
                             if profile.profileLoops.count > 1:
                                 break
                         loops = profile.profileLoops
+                        loop = adsk.fusion.ProfileLoop.cast(None)
                         for loop in loops:
                             prCurves = loop.profileCurves
                             skCurves = convertProfCurvesToSketchCurves(prCurves)
+
+                            # compute the bounding box from the profilecurves because sketch arcs and circles wont return a good bounding box
+                            boundBox = None
+                            for curve in prCurves:
+                                if not boundBox:
+                                    boundBox = curve.boundingBox
+                                else:
+                                    boundBox.combine(curve.boundingBox)  
+
+                            # perform the offsets
                             if loop.isOuter:
                                 # expand the loop
-                                tempSketch.offset(skCurves, getPointOutsideCurves(skCurves), kerf)
+                                offsetCurves = tempSketch.offset(skCurves, getPointOutsideCurves(skCurves, boundBox), kerf)
                             else:
                                 # contract the loop
-                                tempSketch.offset(skCurves, getPointInsideCurves(skCurves), kerf)
-                            # delete the original geometry
-                            for curve in skCurves:
-                                curve.deleteMe() 
-
-                    # move the sketch onto the root XY plane
-                    tempSketch.redefine(root.xYConstructionPlane)  
-
+                                offsetCurves = tempSketch.offset(skCurves, getPointInsideCurves(skCurves, boundBox), kerf)
+                            [curvesToCopy.add(curve) for curve in offsetCurves]
+                            
                     # now copy the sketch curves onto the accumulate sketch with the correct displacements
                     xDisp = -tempSketch.boundingBox.minPoint.x + xDispTotal
                     yDisp = -tempSketch.boundingBox.minPoint.y
-                    tempSketch.copy(getAllSketchCurves(tempSketch), getXYTranslationMatrix(xDisp, yDisp), accumulateSketch)
+                    tempSketch.copy(curvesToCopy, getXYTranslationMatrix(xDisp, yDisp), accumulateSketch)
 
                     # update the total size of the sketch
                     width = tempSketch.boundingBox.maxPoint.x - tempSketch.boundingBox.minPoint.x
@@ -326,18 +334,9 @@ def convertProfCurvesToSketchCurves(prCurves) -> adsk.core.ObjectCollection:
     return skCurves
 
 
-def getPointOutsideCurves(skCurves) -> adsk.core.Point3D:
-    # construct the bounding box for the curves
-    curve = adsk.fusion.SketchCurve.cast(None)
-    pointSets = []
-    boundBox = None
-    for curve in skCurves:
-        if not boundBox:
-            boundBox = curve.boundingBox
-        else:
-            boundBox.combine(curve.boundingBox)
+def getPointOutsideCurves(skCurves, boundBox) -> adsk.core.Point3D:
 
-    # move a point outside the bouding box
+    # move a point outside the bounding box
     cornerVec = boundBox.minPoint.vectorTo(boundBox.maxPoint)
     cornerVec.normalize() 
     outsidePoint = boundBox.maxPoint.copy()
@@ -347,18 +346,12 @@ def getPointOutsideCurves(skCurves) -> adsk.core.Point3D:
 
 # from:
 # https://forums.autodesk.com/t5/fusion-360-api-and-scripts/how-to-determine-a-directionpoint-to-offset-an-arbitrary-sketch/m-p/6425999#M1930
-def getPointInsideCurves(skCurves) -> adsk.core.Point3D:
+def getPointInsideCurves(skCurves, boundBox) -> adsk.core.Point3D:
     try:
         # Build up list of connected points.
         curve = adsk.fusion.SketchCurve.cast(None)
         pointSets = []
-        boundBox = None
-        for curve in skCurves:
-            if not boundBox:
-                boundBox = curve.boundingBox
-            else:
-                boundBox.combine(curve.boundingBox)            
-                
+        for curve in skCurves:          
             if isinstance(curve, adsk.fusion.SketchLine):
                 skLine = adsk.fusion.SketchLine.cast(curve)
                 pointSets.append((skLine.startSketchPoint.geometry, skLine.endSketchPoint.geometry))
@@ -366,7 +359,7 @@ def getPointInsideCurves(skCurves) -> adsk.core.Point3D:
                 curveEval = adsk.core.CurveEvaluator3D.cast(curve.geometry.evaluator)
                 (retVal, startParam, endParam) = curveEval.getParameterExtents()
                 
-                (retVal, strokePoints) = curveEval.getStrokes(startParam, endParam, 0.1)
+                (retVal, strokePoints) = curveEval.getStrokes(startParam, endParam, 1e-3)
                 pointSets.append(strokePoints)
             
         # Create two points that define a line that crosses the entire range.  They're moved
@@ -397,7 +390,7 @@ def getPointInsideCurves(skCurves) -> adsk.core.Point3D:
                         intPoint = adsk.core.Point3D.create(intCoords[0], intCoords[1], 0)
                         intPointList.append((intPoint, intPoint.distanceTo(minPoint)))
         
-        # Make sure at last two intersection points were found.
+        # Make sure at least two intersection points were found.
         if len(intPointList) >= 2:
             # Sort the points by the distance from the min point.
             sortedPoints = sorted(intPointList, key=getKey) 
@@ -428,13 +421,16 @@ def getLineIntersection(p0_x, p0_y, p1_x, p1_y, p2_x, p2_y, p3_x, p3_y):
     s2_x = p3_x - p2_x
     s2_y = p3_y - p2_y
 
-    s = (-s1_y * (p0_x - p2_x) + s1_x * (p0_y - p2_y)) / (-s2_x * s1_y + s1_x * s2_y)
-    t = ( s2_x * (p0_y - p2_y) - s2_y * (p0_x - p2_x)) / (-s2_x * s1_y + s1_x * s2_y)
+    d = (-s2_x * s1_y + s1_x * s2_y)
 
-    if (s >= 0 and s <= 1 and t >= 0 and t <= 1):
-        # Collision detected
-        i_x = p0_x + (t * s1_x)
-        i_y = p0_y + (t * s1_y)
-        return (i_x, i_y)
+    if d:
+        s = (-s1_y * (p0_x - p2_x) + s1_x * (p0_y - p2_y)) / d
+        t = ( s2_x * (p0_y - p2_y) - s2_y * (p0_x - p2_x)) / d
+
+        if (s >= 0 and s <= 1 and t >= 0 and t <= 1):
+            # Collision detected
+            i_x = p0_x + (t * s1_x)
+            i_y = p0_y + (t * s1_y)
+            return (i_x, i_y)
 
     return False  # No collision
