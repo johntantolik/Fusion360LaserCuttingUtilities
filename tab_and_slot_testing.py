@@ -45,7 +45,7 @@ def run(context):
 
             # cast a ray to find the back face of the body
             hit_collection: adsk.core.ObjectCollection = adsk.core.ObjectCollection.create()
-            obj_collection = root.findBRepUsingRay(point, normal, 1, 1e-5, False, hit_collection)
+            obj_collection = root.findBRepUsingRay(point, normal, 1, 1e-5, True, hit_collection)
 
             # get the hit face that corresponds to the back face
             for obj, hit in zip(obj_collection, hit_collection):
@@ -56,8 +56,10 @@ def run(context):
             top_sheet_thickness = hit_point.distanceTo(point)
 
             # now cast the ray to find the bottom body for the joinery
-            obj_collection = root.findBRepUsingRay(hit_point, normal, 0, 1e-5, False, hit_collection)
-            bottom_param_body = obj_collection.item(0)
+            obj_collection = root.findBRepUsingRay(point, normal, 0, 1e-5, True, hit_collection)
+            bottom_param_body = obj_collection.item(1)
+            if bottom_param_body == top_param_body:
+                bottom_param_body = obj_collection.item(0)
             normal.scaleBy(-1.0)  # fix the normal vector
             laser_face = get_face_to_cut_body(bottom_param_body)
             bottom_sheet_thickness = get_2d_body_thickness(laser_face)
