@@ -123,11 +123,11 @@ class laserExportCommandExecuteHandler(adsk.core.CommandEventHandler):
                     # make a temporary sketch from the face
                     # this automatically projects the face onto the sketch, seemingly even when the option to do so in preferences is turned off
                     tempSketch: adsk.fusion.Sketch = root.sketches.add(sortedFaces[0])
-                    curvesToCopy = tempSketch.project(sortedFaces[0])
+                    tempSketch.project(sortedFaces[0])
+                    curvesToCopy = adsk.core.ObjectCollection.create()
 
                     # offset profile to compensate for laser kerf
                     if kerf > 0.0:
-                        curvesToCopy = adsk.core.ObjectCollection.create()
                         tempSketch.isComputeDeferred = True
                         for profile in tempSketch.profiles:
                             # determine which is the main profile
@@ -155,6 +155,8 @@ class laserExportCommandExecuteHandler(adsk.core.CommandEventHandler):
                                 # contract the loop
                                 offsetCurves = tempSketch.offset(skCurves, getPointInsideCurves(skCurves, boundBox), kerf)
                             [curvesToCopy.add(curve) for curve in offsetCurves]
+                    else:
+                        [curvesToCopy.add(curve) for curve in tempSketch.sketchCurves]
                             
                     # now copy the sketch curves onto the accumulate sketch with the correct displacements
                     xDisp = -tempSketch.boundingBox.minPoint.x + xDispTotal
